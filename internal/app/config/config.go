@@ -12,6 +12,7 @@ var (
 	defaultConfig = map[string]string{
 		"port":        "38073",
 		"cookie_file": "cookie.txt",
+		"api_key":     "",
 	}
 )
 

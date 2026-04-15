@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartFr/Asset-Reuploader/internal/app/config"
 	"github.com/kartFr/Asset-Reuploader/internal/roblox"
 )
 
@@ -21,6 +22,8 @@ const (
 	maxPollAttempts  = 30
 	pollInterval     = time.Second
 )
+
+var apiKey = config.Get("api_key")
 
 type createAssetRequest struct {
 	AssetType       string                `json:"assetType"`
@@ -174,6 +177,9 @@ func pollOperation(c *roblox.Client, operationID string) (*operationResponse, er
 	})
 	req.Header.Set("x-csrf-token", c.GetToken())
 	req.Header.Set("User-Agent", "RobloxStudio/WinInet")
+	if apiKey != "" {
+		req.Header.Set("x-api-key", apiKey)
+	}
 
 	resp, err := c.DoRequest(req)
 	if err != nil {
@@ -212,6 +218,9 @@ func executeCreateAsset(
 		Value: c.Cookie,
 	})
 	req.Header.Set("x-csrf-token", c.GetToken())
+	if apiKey != "" {
+		req.Header.Set("x-api-key", apiKey)
+	}
 
 	resp, err := c.DoRequest(req)
 	if err != nil {
