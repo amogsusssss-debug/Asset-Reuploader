@@ -23,7 +23,12 @@ const (
 	pollInterval     = time.Second
 )
 
-var apiKey = config.Get("api_key")
+func setAPIKeyHeader(req *http.Request) {
+	apiKey := strings.TrimSpace(config.Get("api_key"))
+	if apiKey != "" {
+		req.Header.Set("x-api-key", apiKey)
+	}
+}
 
 type createAssetRequest struct {
 	AssetType       string                `json:"assetType"`
@@ -177,9 +182,7 @@ func pollOperation(c *roblox.Client, operationID string) (*operationResponse, er
 	})
 	req.Header.Set("x-csrf-token", c.GetToken())
 	req.Header.Set("User-Agent", "RobloxStudio/WinInet")
-	if apiKey != "" {
-		req.Header.Set("x-api-key", apiKey)
-	}
+	setAPIKeyHeader(req)
 
 	resp, err := c.DoRequest(req)
 	if err != nil {
@@ -218,9 +221,7 @@ func executeCreateAsset(
 		Value: c.Cookie,
 	})
 	req.Header.Set("x-csrf-token", c.GetToken())
-	if apiKey != "" {
-		req.Header.Set("x-api-key", apiKey)
-	}
+	setAPIKeyHeader(req)
 
 	resp, err := c.DoRequest(req)
 	if err != nil {
