@@ -19,17 +19,19 @@ var (
 
 func init() {
 	contents, err := files.Read("config.ini")
-	if err == nil {
-		scanner := bufio.NewScanner(strings.NewReader(contents))
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			split := strings.SplitN(line, "=", 2)
-			if len(split) != 2 {
-				continue
-			}
+	if err != nil {
+		contents = ""
+	}
 
-			config[split[0]] = split[1]
+	scanner := bufio.NewScanner(strings.NewReader(contents))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		split := strings.SplitN(line, "=", 2)
+		if len(split) != 2 {
+			continue
 		}
+
+		config[split[0]] = split[1]
 	}
 
 	for i, v := range defaultConfig {
