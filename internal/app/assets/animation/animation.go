@@ -3,6 +3,7 @@ package animation
 import (
 	"errors"
 	"fmt"
+	"net"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -89,6 +90,7 @@ func Reupload(ctx *context.Context, r *request.Request) {
 	creatorPlaceMap := shardedmap.New[*atomicarray.AtomicArray[int64]]()
 	creatorMutexMap := shardedmap.New[*sync.RWMutex]()
 
+	uploadQueue := taskqueue.New[int64](time.Minute, 3000)                  // wouldnt it be smarter to build in the queue with the api library... YES... but we dont do fixes aroudn here we just add on to the slow degredation of the code base
 	groupGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 5) // there doesnt seem to be a limit in minutes on this api endpoint... and its not public and i dont feel like testing the limits sooo hopefully this works
 	userGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 5)  // I dont even think there is a limit on this like group games but we can be safe... yes i like to spam elipses
 
@@ -122,36 +124,48 @@ func Reupload(ctx *context.Context, r *request.Request) {
 			return
 		}
 
-		newID, err := retry.Do(
-			retry.NewOptions(retry.Tries(animationUploadRetryTries)),
-			func(try int) (int64, error) {
-				pauseController.WaitIfPaused()
-
-				id, err := uploadHandler()
-				if err == nil {
-					return id, nil
-				}
-
-				switch err {
-				case ide.UploadAnimationErrors.ErrNotLoggedIn:
-					clientutils.GetNewCookie(ctx, r, "cookie expired")
-				case ide.UploadAnimationErrors.ErrInappropriateName:
-					assetInfo.Name = fmt.Sprintf("(%s) [Censored]", assetInfo.Name)
-				default:
-					if errors.Is(err, ide.ErrRateLimited) && try < animationUploadRetryTries {
-						time.Sleep(animationRateLimitBackoff(try))
+		res := <-uploadQueue.QueueTask(func() (int64, error) {
+			return retry.Do(
+				retry.NewOptions(retry.Tries(animationUploadRetryTries)),
+				func(try int) (int64, error) {
+					pauseController.WaitIfPaused()
+					if try > 1 {
+						uploadQueue.Limiter.Wait()
 					}
-				}
 
-				return 0, &retry.ContinueRetry{Err: err}
-			},
-		)
+					id, err := uploadHandler()
+					if err == nil {
+						return id, nil
+					}
 
-		if err != nil {
+					switch err {
+					case ide.UploadAnimationErrors.ErrNotLoggedIn:
+						clientutils.GetNewCookie(ctx, r, "cookie expired")
+					case ide.UploadAnimationErrors.ErrInappropriateName:
+						assetInfo.Name = fmt.Sprintf("(%s) [Censored]", assetInfo.Name)
+					default:
+						if errors.Is(err, ide.ErrRateLimited) && try < animationUploadRetryTries {
+							time.Sleep(animationRateLimitBackoff(try))
+						}
+
+						switch err.(type) {
+						case *net.OpError, *net.DNSError:
+							uploadQueue.Limiter.Decrement()
+						}
+					}
+
+					return 0, &retry.ContinueRetry{Err: err}
+				},
+			)
+		})
+
+		if err := res.Error; err != nil {
 			assetInfo.Name = oldName
 			newUploadError("Failed to upload", assetInfo, err)
 			return
 		}
+
+		newID := res.Result
 		newValue := idsProcessed.Add(1)
 		logger.Success(uploaderror.New(int(newValue), idsToUpload, "", assetInfo, newID))
 		resp.AddItem(response.ResponseItem{
