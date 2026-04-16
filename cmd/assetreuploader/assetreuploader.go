@@ -44,6 +44,7 @@ func main() {
 	if err := files.Write(cookieFile, c.Cookie); err != nil {
 		color.Error.Println("Failed to save cookie: ", err)
 	}
+	ensureAPIKey()
 
 	fmt.Println("localhost started on port " + port + ". Waiting to start reuploading.")
 	if err := serve(c); err != nil {
@@ -70,5 +71,28 @@ func getCookie(c *roblox.Client) {
 
 		files.Write(cookieFile, i)
 		break
+	}
+}
+
+func ensureAPIKey() {
+	if strings.TrimSpace(config.Get("api_key")) != "" {
+		return
+	}
+
+	fmt.Println("Enter your Open Cloud API key to enable mesh/animation uploads.")
+	key, err := console.Input("API key (leave blank to skip): ")
+	if err != nil {
+		color.Error.Println(err)
+		return
+	}
+
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+
+	config.Set("api_key", key)
+	if err := config.Save(); err != nil {
+		color.Error.Println("Failed to save api key: ", err)
 	}
 }
