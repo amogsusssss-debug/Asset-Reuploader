@@ -30,6 +30,10 @@ const animationUploadRetryTries = 3
 
 var ErrUnauthorized = errors.New("authentication required to access asset")
 
+func animationRateLimitBackoff(try int) time.Duration {
+	return time.Second * time.Duration(1<<(try-1))
+}
+
 func MoveValueToTop[T comparable](arr *atomicarray.AtomicArray[T], value T) {
 	arr.Update(func(currentArray []T) []T {
 		if currentArray[0] == value {
@@ -134,7 +138,7 @@ func Reupload(ctx *context.Context, r *request.Request) {
 						assetInfo.Name = fmt.Sprintf("(%s) [Censored]", assetInfo.Name)
 					default:
 						if errors.Is(err, ide.ErrRateLimited) && try < animationUploadRetryTries {
-							time.Sleep(time.Second * time.Duration(1<<(try-1)))
+							time.Sleep(animationRateLimitBackoff(try))
 						}
 
 						switch err.(type) {
