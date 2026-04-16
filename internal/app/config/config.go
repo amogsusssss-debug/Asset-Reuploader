@@ -2,6 +2,8 @@ package config
 
 import (
 	"bufio"
+	"log"
+	"os"
 	"sort"
 	"strings"
 
@@ -19,6 +21,9 @@ var (
 
 func init() {
 	contents, err := files.Read("config.ini")
+	if err != nil && !os.IsNotExist(err) {
+		log.Printf("failed reading config.ini, using defaults: %v", err)
+	}
 	if err != nil {
 		contents = ""
 	}
@@ -31,7 +36,11 @@ func init() {
 			continue
 		}
 
-		config[split[0]] = split[1]
+		key := strings.TrimSpace(split[0])
+		if key == "" {
+			continue
+		}
+		config[key] = split[1]
 	}
 
 	for i, v := range defaultConfig {
