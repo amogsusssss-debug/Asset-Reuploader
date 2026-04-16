@@ -134,7 +134,7 @@ func newCreateAssetRequest(
 	req, err := http.NewRequest("POST", createAssetURL, pr)
 	if err != nil {
 		_ = pr.Close()
-		_ = pw.Close()
+		_ = pw.CloseWithError(err)
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "RobloxStudio/WinInet")

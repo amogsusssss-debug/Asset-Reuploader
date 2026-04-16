@@ -2,7 +2,6 @@ package config
 
 import (
 	"bufio"
-	"fmt"
 	"sort"
 	"strings"
 
@@ -57,11 +56,11 @@ func Save() error {
 	}
 	sort.Strings(keys)
 
-	for i, key := range keys {
-		_, _ = fmt.Fprintf(&out, "%s=%s", key, config[key])
-		if i != len(keys)-1 {
-			out.WriteByte('\n')
-		}
+	for _, key := range keys {
+		out.WriteString(key)
+		out.WriteByte('=')
+		out.WriteString(config[key])
+		out.WriteByte('\n')
 	}
 	return files.Write("config.ini", out.String())
 }
