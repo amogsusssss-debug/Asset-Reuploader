@@ -292,13 +292,20 @@ func Reupload(ctx *context.Context, r *request.Request) {
 		body := assetutils.NewBatchBodyFromIDs(ids)
 
 		var uploadWG sync.WaitGroup
-		var assetLocations []*assetdelivery.AssetLocation
 		creatorPlaceCache := placeCache.Load()
+		if len(creatorPlaceCache) == 0 {
+			for _, req := range body {
+				assetInfo := assetInfoMap[req.AssetID]
+				newUploadError("Failed to get asset location", assetInfo, "no place IDs (add place(s) under Filter, or ensure the creator has a discoverable experience)")
+			}
+			return
+		}
+
 		for _, placeID := range creatorPlaceCache {
-			assetLocations, err = getAssetLocations(body, placeID)
+			assetLocations, err := getAssetLocations(body, placeID)
 			if err != nil {
-				newBatchError(len(body), "Failed to get asset locations", err)
-				return
+				// Try another place instead of dropping the whole batch on one failed request.
+				continue
 			}
 
 			var hadSuccess bool
@@ -322,20 +329,11 @@ func Reupload(ctx *context.Context, r *request.Request) {
 			}
 		}
 
-		for i, assetLocation := range assetLocations {
-			if len(assetLocation.Locations) != 0 {
-				continue
-			}
-			if i >= len(body) {
-				break
-			}
-			assetID := body[i].AssetID
-			assetInfo := assetInfoMap[assetID]
-			msg := "unknown error"
-			if len(assetLocation.Errors) > 0 {
-				msg = assetLocation.Errors[0].Message
-			}
-			newUploadError("Failed to get asset location", assetInfo, msg)
+		// Anything left in body got no URL from any place. Do not index into the last
+		// batch response here: after partial successes, body indices no longer match.
+		for _, req := range body {
+			assetInfo := assetInfoMap[req.AssetID]
+			newUploadError("Failed to get asset location", assetInfo, "no download URL from any place (check Filter place IDs and permissions)")
 		}
 
 		uploadWG.Wait()
