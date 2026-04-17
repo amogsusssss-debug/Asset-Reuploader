@@ -35,6 +35,10 @@ func (w *fixedWindow) Increment() bool {
 		w.requests = max(w.requests-w.limit, 0)
 	}
 
+	if w.requests < 0 {
+		w.requests = 0
+	}
+
 	if w.requests >= w.limit {
 		return false
 	}
@@ -45,8 +49,10 @@ func (w *fixedWindow) Increment() bool {
 
 func (w *fixedWindow) Decrement() {
 	w.mu.Lock()
-	w.requests--
-	w.mu.Unlock()
+	defer w.mu.Unlock()
+	if w.requests > 0 {
+		w.requests--
+	}
 }
 
 func (w *fixedWindow) Wait() {

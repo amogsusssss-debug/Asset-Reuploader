@@ -3,7 +3,6 @@ package animation
 import (
 	"errors"
 	"fmt"
-	"net"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -142,9 +141,6 @@ func Reupload(ctx *context.Context, r *request.Request) {
 				retry.NewOptions(retry.Tries(animationUploadRetryTries)),
 				func(try int) (int64, error) {
 					pauseController.WaitIfPaused()
-					if try > 1 {
-						uploadQueue.Limiter.Wait()
-					}
 
 					id, err := uploadHandler()
 					if err == nil {
@@ -159,11 +155,6 @@ func Reupload(ctx *context.Context, r *request.Request) {
 					default:
 						if errors.Is(err, ide.ErrRateLimited) && try < animationUploadRetryTries {
 							time.Sleep(animationRateLimitBackoff(try))
-						}
-
-						switch err.(type) {
-						case *net.OpError, *net.DNSError:
-							uploadQueue.Limiter.Decrement()
 						}
 					}
 
