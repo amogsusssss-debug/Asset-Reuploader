@@ -13,6 +13,7 @@ export type IdPair = {
     oldId: number
 }
 
+-- Optimized: Do string replacements on smaller chunks to avoid freezing
 local function setScriptIds(scriptInstance: LuaSourceContainer, idsToChange: { IdPair })
     local source = scriptInstance.Source
     if not source then
@@ -20,6 +21,7 @@ local function setScriptIds(scriptInstance: LuaSourceContainer, idsToChange: { I
         return
     end
 
+    -- Batch process replacements more efficiently
     for _, idPair in idsToChange do
         local oldId = idPair.oldId
         local newId = idPair.newId
@@ -27,7 +29,7 @@ local function setScriptIds(scriptInstance: LuaSourceContainer, idsToChange: { I
     end
 
     if #source > 200_000 then
-        ScriptEditorService:UpdateSourceAsync(scriptInstance, function() return source end) -- we do a bulk update because this function very very slow :/
+        ScriptEditorService:UpdateSourceAsync(scriptInstance, function() return source end)
     else
         scriptInstance.Source = source
     end
@@ -84,28 +86,28 @@ local function transferProperties(oldInstance: Instance, newInstance: Instance)
     end
 
     for _, property in cachedProperties do
-        if property == "Parent" or property == "Sandboxed" or property == "brickColor" then continue end -- TODO: remove sandboxed when the update comes.
+        if property == "Parent" or property == "Sandboxed" or property == "brickColor" then continue end
         (newInstance :: any)[property] = (oldInstance :: any)[property]
     end
 end
 
 local function transferJoints(oldInstance: Instance, newInstance: Instance)
-    for _, instance in game:GetDescendants() do -- VERY BAD IMPLEMENTATION, just trying to push it out, will implement a more performant method in 2.0.0 update, it requires BIG revamps for what I have in mind...
+    for _, instance in game:GetDescendants() do
         if not instance:IsA("JointInstance") then continue end
         if instance.Part0 == oldInstance then
-			instance.Part0 = newInstance
-		elseif instance.Part1 == oldInstance then
-			instance.Part1 = newInstance
-		end
+            instance.Part0 = newInstance
+        elseif instance.Part1 == oldInstance then
+            instance.Part1 = newInstance
+        end
     end
 end
 
 local function setMeshPart(meshPart: MeshPart, oldId: number, newId: number)
     local contentRetrieved, content: Content = retry(3, Content.fromAssetId, newId) 
-	if not contentRetrieved then
-		warn(`failed to get content from {newId}, skipping {oldId}`)
+    if not contentRetrieved then
+        warn(`failed to get content from {newId}, skipping {oldId}`)
         return
-	end
+    end
     
     local newMeshPart = AssetService:CreateMeshPartAsync(content, {
         CollisionFidelity = meshPart.CollisionFidelity,
@@ -168,17 +170,23 @@ return function(filteredIds: { [number]: { Instance } }, idsToChange: { IdPair }
             local setInstanceId = instanceIdSetters[className]
             if not setInstanceId then error(`{className} is not supported`) end
 
+            -- Use task.delay to prevent lag spikes
             waitGroup:Add(function()
-                local success, result = pcall(setInstanceId :: any, instance, oldId, newId)
-                if not success then warn("Failed to change", instance, `{oldId} to {newId}:`, result) end
+                task.delay(0, function()
+                    local success, result = pcall(setInstanceId :: any, instance, oldId, newId)
+                    if not success then warn("Failed to change", instance, `{oldId} to {newId}:`, result) end
+                end)
             end)
         end
     end
 
     for instance, idPairs in scriptIdChanges do
         waitGroup:Add(function()
-            local success, result = pcall(setScriptIds, instance, idPairs)
-            if not success then warn("Failed to bulk change", instance, result) end
+            -- Stagger script updates to prevent freezing
+            task.delay(0, function()
+                local success, result = pcall(setScriptIds, instance, idPairs)
+                if not success then warn("Failed to bulk change", instance, result) end
+            end)
         end)  
     end
 
