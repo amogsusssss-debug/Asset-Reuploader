@@ -24,10 +24,17 @@ func main() {
 	fmt.Println("Authenticating cookie...")
 
 	cookie, readErr := files.Read(cookieFile)
-	
-	// Parse cookie file to extract Roblox cookie and API key
-	roblosCookie, apiKey := parseCookieFile(cookie)
+
+	// Parse cookie file (Roblox cookie + optional legacy api-key: line)
+	roblosCookie, legacyAPIKey := parseCookieFile(cookie)
 	roblosCookie = strings.TrimSpace(roblosCookie)
+	legacyAPIKey = strings.TrimSpace(legacyAPIKey)
+	if legacyAPIKey != "" && strings.TrimSpace(config.Get("api_key")) == "" {
+		config.Set("api_key", legacyAPIKey)
+		if err := config.PersistAPIKey(); err != nil {
+			color.Error.Println("Failed to save API key to ", config.Get("api_key_file"), ": ", err)
+		}
+	}
 
 	c, clientErr := roblox.NewClient(roblosCookie)
 	console.ClearScreen()
@@ -44,8 +51,7 @@ func main() {
 		getCookie(c)
 	}
 
-	// Save cookie and API key to cookie.txt
-	if err := saveCookieFile(c.Cookie, apiKey); err != nil {
+	if err := saveCookieFile(c.Cookie); err != nil {
 		color.Error.Println("Failed to save cookie: ", err)
 	}
 	
@@ -73,19 +79,9 @@ func parseCookieFile(content string) (roblosCookie, apiKey string) {
 	return roblosCookie, apiKey
 }
 
-// saveCookieFile saves the Roblox cookie and API key to cookie.txt
-func saveCookieFile(roblosCookie, apiKey string) error {
-	var content strings.Builder
-	content.WriteString(roblosCookie)
-	content.WriteByte('\n')
-	
-	if apiKey != "" {
-		content.WriteString("api-key:")
-		content.WriteString(apiKey)
-		content.WriteByte('\n')
-	}
-	
-	return files.Write(cookieFile, content.String())
+// saveCookieFile saves the Roblox cookie to cookie.txt (API key lives in api-key.txt).
+func saveCookieFile(roblosCookie string) error {
+	return files.Write(cookieFile, strings.TrimSpace(roblosCookie)+"\n")
 }
 
 func getCookie(c *roblox.Client) {
@@ -134,19 +130,11 @@ func ensureAPIKey() {
 	}
 
 	config.Set("api_key", key)
-	if err := config.Save(); err != nil {
+	if err := config.PersistAPIKey(); err != nil {
 		color.Error.Println("Failed to save api key: ", err)
-	}
-	
-	// Also save API key to cookie.txt
-	cookie, readErr := files.Read(cookieFile)
-	if readErr != nil {
-		color.Error.Println("Failed to read cookie file: ", readErr)
 		return
 	}
-	
-	roblosCookie, _ := parseCookieFile(cookie)
-	if err := saveCookieFile(roblosCookie, key); err != nil {
-		color.Error.Println("Failed to save API key to cookie.txt: ", err)
+	if err := config.Save(); err != nil {
+		color.Error.Println("Failed to save config: ", err)
 	}
 }
