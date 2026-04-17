@@ -29,6 +29,10 @@ const assetTypeID int32 = 24
 const animationUploadRetryTries = 3
 const animationUploadRateLimitMaxPower = 6
 
+// Roblox’s create-asset endpoint rate-limits aggressively; this caps how many
+// animation uploads we start per minute (see taskqueue.Queue scheduler + limiter).
+const animationUploadsPerMinute = 120
+
 var ErrUnauthorized = errors.New("authentication required to access asset")
 
 func animationRateLimitBackoff(try int) time.Duration {
@@ -90,7 +94,7 @@ func Reupload(ctx *context.Context, r *request.Request) {
 	creatorPlaceMap := shardedmap.New[*atomicarray.AtomicArray[int64]]()
 	creatorMutexMap := shardedmap.New[*sync.RWMutex]()
 
-	uploadQueue := taskqueue.New[int64](time.Minute, 3000)                  // wouldnt it be smarter to build in the queue with the api library... YES... but we dont do fixes aroudn here we just add on to the slow degredation of the code base
+	uploadQueue := taskqueue.New[int64](time.Minute, animationUploadsPerMinute)
 	groupGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 5) // there doesnt seem to be a limit in minutes on this api endpoint... and its not public and i dont feel like testing the limits sooo hopefully this works
 	userGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 5)  // I dont even think there is a limit on this like group games but we can be safe... yes i like to spam elipses
 
@@ -273,6 +277,7 @@ func Reupload(ctx *context.Context, r *request.Request) {
 		placeCache, err := getCreatorPlaceCache(creatorID, creatorType)
 		if err != nil {
 			newBatchError(len(creatorAssets), "Failed to get creator places", err)
+			return
 		}
 
 		assetInfoMap := make(map[int64]*develop.AssetInfo)
@@ -314,16 +319,20 @@ func Reupload(ctx *context.Context, r *request.Request) {
 			}
 		}
 
-		var index int
-		for _, assetLocation := range assetLocations {
+		for i, assetLocation := range assetLocations {
 			if len(assetLocation.Locations) != 0 {
 				continue
 			}
-			assetID := body[index].AssetID
-			index++
-
+			if i >= len(body) {
+				break
+			}
+			assetID := body[i].AssetID
 			assetInfo := assetInfoMap[assetID]
-			newUploadError("Failed to get asset location", assetInfo, assetLocation.Errors[0].Message)
+			msg := "unknown error"
+			if len(assetLocation.Errors) > 0 {
+				msg = assetLocation.Errors[0].Message
+			}
+			newUploadError("Failed to get asset location", assetInfo, msg)
 		}
 
 		uploadWG.Wait()
