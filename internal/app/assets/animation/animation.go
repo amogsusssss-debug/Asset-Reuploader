@@ -26,8 +26,6 @@ import (
 
 const assetTypeID int32 = 24
 const animationUploadRetryTries = 3
-const animationUploadRateLimitMaxPower = 6
-
 // Scheduler + limiter ceiling (see taskqueue). Real parallelism is capped below so
 // we do not burst dozens of overlapping Roblox requests when uploads are slow.
 const animationUploadsPerMinute = 280
@@ -38,14 +36,17 @@ const animationMaxInflight = 6
 
 var ErrUnauthorized = errors.New("authentication required to access asset")
 
+// Backoff after Roblox HTTP rate-limit on a single upload attempt. Kept in seconds
+// so one asset does not block the pipeline for minutes (old behavior used minutes).
 func animationRateLimitBackoff(try int) time.Duration {
 	if try < 1 {
 		try = 1
 	}
-	if try > animationUploadRateLimitMaxPower {
-		try = animationUploadRateLimitMaxPower
+	sec := 4 * (1 << (try - 1)) // 4, 8, 16, …
+	if sec > 25 {
+		return 25 * time.Second
 	}
-	return time.Minute * time.Duration(1<<(try-1))
+	return time.Duration(sec) * time.Second
 }
 
 func MoveValueToTop[T comparable](arr *atomicarray.AtomicArray[T], value T) {
@@ -138,7 +139,11 @@ func Reupload(ctx *context.Context, r *request.Request) {
 
 		res := <-uploadQueue.QueueTask(func() (int64, error) {
 			return retry.Do(
-				retry.NewOptions(retry.Tries(animationUploadRetryTries)),
+				retry.NewOptions(
+					retry.Tries(animationUploadRetryTries),
+					retry.Delay(400*time.Millisecond),
+					retry.MaxDelay(2*time.Second),
+				),
 				func(try int) (int64, error) {
 					pauseController.WaitIfPaused()
 
