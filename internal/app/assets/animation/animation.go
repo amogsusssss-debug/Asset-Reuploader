@@ -31,50 +31,6 @@ const animationUploadRateLimitMaxPower = 6
 
 var ErrUnauthorized = errors.New("authentication required to access asset")
 
-// TokenBucket implements a token bucket rate limiter
-type TokenBucket struct {
-	tokens        float64
-	maxTokens     float64
-	refillRate    float64 // tokens per second
-	lastRefillTime time.Time
-	mu            sync.Mutex
-}
-
-// NewTokenBucket creates a new token bucket with the given capacity and refill rate
-func NewTokenBucket(capacity float64, requestsPerSecond float64) *TokenBucket {
-	return &TokenBucket{
-		tokens:         capacity,
-		maxTokens:      capacity,
-		refillRate:     requestsPerSecond,
-		lastRefillTime: time.Now(),
-	}
-}
-
-// Wait blocks until a token is available and consumes it
-func (tb *TokenBucket) Wait() {
-	for {
-		tb.mu.Lock()
-		now := time.Now()
-		
-		// Refill tokens based on time elapsed
-		elapsed := now.Sub(tb.lastRefillTime).Seconds()
-		tb.tokens = math.Min(tb.maxTokens, tb.tokens+elapsed*tb.refillRate)
-		tb.lastRefillTime = now
-		
-		// If token available, consume it and return
-		if tb.tokens >= 1.0 {
-			tb.tokens -= 1.0
-			tb.mu.Unlock()
-			return
-		}
-		
-		tb.mu.Unlock()
-		
-		// Wait a bit before trying again (100ms)
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
 func animationRateLimitBackoff(try int) time.Duration {
 	if try < 1 {
 		try = 1
@@ -134,13 +90,9 @@ func Reupload(ctx *context.Context, r *request.Request) {
 	creatorPlaceMap := shardedmap.New[*atomicarray.AtomicArray[int64]]()
 	creatorMutexMap := shardedmap.New[*sync.RWMutex]()
 
-	uploadQueue := taskqueue.New[int64](time.Minute, 3000)
-	groupGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 5)
-	userGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 5)
-
-	// Anti-API rate limiter: 1 request per 2 seconds (30 per minute)
-	// This is conservative enough to avoid Roblox rate limits
-	antiRateLimiter := NewTokenBucket(1, 0.5) // 0.5 requests per second = 1 req per 2 seconds
+	uploadQueue := taskqueue.New[int64](time.Minute, 3000)                  // wouldnt it be smarter to build in the queue with the api library... YES... but we dont do fixes aroudn here we just add on to the slow degredation of the code base
+	groupGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 5) // there doesnt seem to be a limit in minutes on this api endpoint... and its not public and i dont feel like testing the limits sooo hopefully this works
+	userGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 5)  // I dont even think there is a limit on this like group games but we can be safe... yes i like to spam elipses
 
 	logger.Println("Reuploading animations...")
 
@@ -158,9 +110,6 @@ func Reupload(ctx *context.Context, r *request.Request) {
 	uploadAsset := func(wg *sync.WaitGroup, assetInfo *develop.AssetInfo, location string) {
 		defer wg.Done()
 
-		// Apply anti-API rate limiter BEFORE attempting upload
-		antiRateLimiter.Wait()
-
 		oldName := assetInfo.Name
 
 		assetData, err := clientutils.GetRequest(client, location)
@@ -175,56 +124,54 @@ func Reupload(ctx *context.Context, r *request.Request) {
 			return
 		}
 
-		var finalErr error
+		res := <-uploadQueue.QueueTask(func() (int64, error) {
+			return retry.Do(
+				retry.NewOptions(retry.Tries(animationUploadRetryTries)),
+				func(try int) (int64, error) {
+					pauseController.WaitIfPaused()
+					if try > 1 {
+						uploadQueue.Limiter.Wait()
+					}
 
-		for try := 1; try <= animationUploadRetryTries; try++ {
-			pauseController.WaitIfPaused()
+					id, err := uploadHandler()
+					if err == nil {
+						return id, nil
+					}
 
-			id, err := uploadHandler()
-			if err == nil {
-				newValue := idsProcessed.Add(1)
-				logger.Success(uploaderror.New(int(newValue), idsToUpload, "", assetInfo, id))
-				resp.AddItem(response.ResponseItem{
-					OldID: assetInfo.ID,
-					NewID: id,
-				})
-				return
-			}
+					switch err {
+					case ide.UploadAnimationErrors.ErrNotLoggedIn:
+						clientutils.GetNewCookie(ctx, r, "cookie expired")
+					case ide.UploadAnimationErrors.ErrInappropriateName:
+						assetInfo.Name = fmt.Sprintf("(%s) [Censored]", assetInfo.Name)
+					default:
+						if errors.Is(err, ide.ErrRateLimited) && try < animationUploadRetryTries {
+							time.Sleep(animationRateLimitBackoff(try))
+						}
 
-			finalErr = err
+						switch err.(type) {
+						case *net.OpError, *net.DNSError:
+							uploadQueue.Limiter.Decrement()
+						}
+					}
 
-			switch err {
-			case ide.UploadAnimationErrors.ErrNotLoggedIn:
-				clientutils.GetNewCookie(ctx, r, "cookie expired")
-				continue
-			case ide.UploadAnimationErrors.ErrInappropriateName:
-				assetInfo.Name = fmt.Sprintf("(%s) [Censored]", assetInfo.Name)
-				continue
-			default:
-				// Always sleep on rate limit errors with exponential backoff
-				if errors.Is(err, ide.ErrRateLimited) {
-					backoffDuration := animationRateLimitBackoff(try)
-					logger.Printf("Rate limited on try %d, waiting %v before retry", try, backoffDuration)
-					time.Sleep(backoffDuration)
-					continue
-				}
+					return 0, &retry.ContinueRetry{Err: err}
+				},
+			)
+		})
 
-				// Network errors: continue retry with small delay
-				switch err.(type) {
-				case *net.OpError, *net.DNSError:
-					logger.Printf("Network error on try %d: %v, retrying...", try, err)
-					time.Sleep(time.Second * time.Duration(try))
-					continue
-				}
-
-				// Other errors: stop retrying
-				break
-			}
+		if err := res.Error; err != nil {
+			assetInfo.Name = oldName
+			newUploadError("Failed to upload", assetInfo, err)
+			return
 		}
 
-		// Upload failed after all retries
-		assetInfo.Name = oldName
-		newUploadError("Failed to upload", assetInfo, finalErr)
+		newID := res.Result
+		newValue := idsProcessed.Add(1)
+		logger.Success(uploaderror.New(int(newValue), idsToUpload, "", assetInfo, newID))
+		resp.AddItem(response.ResponseItem{
+			OldID: assetInfo.ID,
+			NewID: newID,
+		})
 	}
 
 	getCreatorPlaceCache := func(creatorID int64, creatorType string) (*atomicarray.AtomicArray[int64], error) {
@@ -271,14 +218,14 @@ func Reupload(ctx *context.Context, r *request.Request) {
 			return nil, err
 		}
 
-		ids := make([]int64, 0, len(defaultPlaceIDs))
-		for _, placeInfo := range resp.Data {
+		ids := make([]int64, 0, len(defaultPlaceIDs)) // we only do len defaultPlaceIds because there may be overlapping, i guess allocating more memory would be fine... idk guys im getting lazy just wait for revamp
+		for _, placeInfo := range resp.Data {         // yes we copying many bytes per iteration, yes i dont care, yes this is another stupid message, yes code iwll get better on revamp :sob:
 			rootPlaceID := placeInfo.RootPlace.ID
 
 			if _, exists := defaultPlaceIDsMap[rootPlaceID]; exists {
 				continue
 			}
-			ids = append(ids, rootPlaceID)
+			ids = append(ids, rootPlaceID) // we no longer only need 1 valid place id :// ( ͡° ͜ʖ ͡°) yall remember this peak face lmk
 		}
 		ids = append(ids, defaultPlaceIDs...)
 
