@@ -13,6 +13,12 @@ export type IdPair = {
     oldId: number
 }
 
+-- Whole numeric id token (same idea as setScriptIds). Plain gsub(oldId) can match a
+-- digit prefix inside a larger rbxassetid and corrupt the URL.
+local function replaceFullNumberToken(s: string, oldId: number, newId: number): string
+	return string.gsub(s, `%f[%d]{oldId}%f[%D]`, tostring(newId))
+end
+
 -- Optimized: Do string replacements on smaller chunks to avoid freezing
 local function setScriptIds(scriptInstance: LuaSourceContainer, idsToChange: { IdPair })
     local source = scriptInstance.Source
@@ -36,11 +42,11 @@ local function setScriptIds(scriptInstance: LuaSourceContainer, idsToChange: { I
 end
 
 local function setAnimationId(animation: Animation, oldId: number, newId: number)
-    animation.AnimationId = string.gsub(animation.AnimationId, tostring(oldId), tostring(newId)) 
+    animation.AnimationId = replaceFullNumberToken(animation.AnimationId, oldId, newId)
 end
 
 local function setSoundId(sound: Sound, oldId: number, newId: number)
-    sound.SoundId = string.gsub(sound.SoundId, tostring(oldId), tostring(newId))  
+    sound.SoundId = replaceFullNumberToken(sound.SoundId, oldId, newId)
 end
 
 local function setNumberValueId(numValue: NumberValue | IntValue, _: number, newId: number)
@@ -48,7 +54,7 @@ local function setNumberValueId(numValue: NumberValue | IntValue, _: number, new
 end
 
 local function setStringValueIds(strValue: StringValue, oldId: number, newId: number)
-    strValue.Value = string.gsub(strValue.Value, tostring(oldId), tostring(newId)) 
+    strValue.Value = replaceFullNumberToken(strValue.Value, oldId, newId)
 end
 
 local function setCharacterMesh(characterMesh: CharacterMesh, _: number, newId: number)
@@ -132,7 +138,7 @@ local function setMeshPart(meshPart: MeshPart, oldId: number, newId: number)
 end
 
 local function setSpecialMesh(specialMesh: SpecialMesh, oldId: number, newId: number)
-    specialMesh.MeshId = string.gsub(specialMesh.MeshId, tostring(oldId), tostring(newId))
+    specialMesh.MeshId = replaceFullNumberToken(specialMesh.MeshId, oldId, newId)
 end
 
 local instanceIdSetters = {

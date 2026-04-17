@@ -26,25 +26,27 @@ import (
 
 const assetTypeID int32 = 24
 const animationUploadRetryTries = 3
-// Scheduler + limiter ceiling (see taskqueue). Real parallelism is capped below so
-// we do not burst dozens of overlapping Roblox requests when uploads are slow.
-const animationUploadsPerMinute = 280
+// Scheduler + limiter ceiling (see taskqueue). Stay below Roblox’s real limits so
+// we throttle here first instead of hammering then recovering.
+const animationUploadsPerMinute = 90
 
 // Max animations being downloaded + uploaded at once (each holds a slot until the
-// new asset id is committed). Keeps traffic steady instead of spiking with latency.
-const animationMaxInflight = 6
+// new asset id is committed). Lower count avoids overlapping create-asset calls.
+const animationMaxInflight = 3
+
+// Limits how many 50-id asset-info chunks run batch upload at once (fewer spikes).
+const animationMaxParallelChunks = 3
 
 var ErrUnauthorized = errors.New("authentication required to access asset")
 
-// Backoff after Roblox HTTP rate-limit on a single upload attempt. Kept in seconds
-// so one asset does not block the pipeline for minutes (old behavior used minutes).
+// Backoff after Roblox HTTP rate-limit on a single upload attempt (seconds only).
 func animationRateLimitBackoff(try int) time.Duration {
 	if try < 1 {
 		try = 1
 	}
-	sec := 4 * (1 << (try - 1)) // 4, 8, 16, …
-	if sec > 25 {
-		return 25 * time.Second
+	sec := 6 * (1 << (try - 1)) // 6, 12, 24, …
+	if sec > 30 {
+		return 30 * time.Second
 	}
 	return time.Duration(sec) * time.Second
 }
@@ -139,11 +141,7 @@ func Reupload(ctx *context.Context, r *request.Request) {
 
 		res := <-uploadQueue.QueueTask(func() (int64, error) {
 			return retry.Do(
-				retry.NewOptions(
-					retry.Tries(animationUploadRetryTries),
-					retry.Delay(400*time.Millisecond),
-					retry.MaxDelay(2*time.Second),
-				),
+				retry.NewOptions(retry.Tries(animationUploadRetryTries)),
 				func(try int) (int64, error) {
 					pauseController.WaitIfPaused()
 
@@ -393,6 +391,7 @@ func Reupload(ctx *context.Context, r *request.Request) {
 	var wg sync.WaitGroup
 	tasks := assetutils.GetAssetsInfoInChunks(ctx, r)
 	wg.Add(len(tasks))
+	chunkSlots := make(chan struct{}, animationMaxParallelChunks)
 	for i, task := range tasks {
 		batchSize := 50
 		if i == len(tasks)-1 {
@@ -402,7 +401,11 @@ func Reupload(ctx *context.Context, r *request.Request) {
 			}
 		}
 
-		go batchProcess(&wg, <-task, batchSize)
+		chunkSlots <- struct{}{}
+		go func(taskCh <-chan assetutils.AssetsInfoResult, bs int) {
+			defer func() { <-chunkSlots }()
+			batchProcess(&wg, <-taskCh, bs)
+		}(task, batchSize)
 	}
 	wg.Wait()
 }
