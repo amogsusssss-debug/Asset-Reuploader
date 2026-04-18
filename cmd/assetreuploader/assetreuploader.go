@@ -118,23 +118,28 @@ func ensureAPIKey() {
 	fmt.Println("3. Enter any name")
 	fmt.Println("4. Select Assets in Select API System")
 	fmt.Println("5. Select Write in each Assets permission")
-	key, err := console.Input("API key (leave blank to skip): ")
-	if err != nil {
-		color.Error.Println(err)
-		return
-	}
+	for {
+		key, err := console.Input("API key: ")
+		if err != nil {
+			color.Error.Println(err)
+			continue
+		}
 
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return
-	}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			color.Error.Println("API key is required.")
+			continue
+		}
 
-	config.Set("api_key", key)
-	if err := config.PersistAPIKey(); err != nil {
-		color.Error.Println("Failed to save api key: ", err)
-		return
-	}
-	if err := config.Save(); err != nil {
-		color.Error.Println("Failed to save config: ", err)
+		config.Set("api_key", key)
+		if err := config.PersistAPIKey(); err != nil {
+			color.Error.Println("Failed to save api key: ", err)
+			continue
+		}
+		if err := config.Save(); err != nil {
+			color.Error.Println("Failed to save config: ", err)
+			continue
+		}
+		break
 	}
 }
