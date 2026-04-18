@@ -35,21 +35,6 @@ func (p *UniformPacer) Wait() {
 	p.next = now.Add(p.gap)
 }
 
-// AddChill pushes the next allowed Wait time forward (e.g. after HTTP 429) so later
-// starts space out slightly without a long fixed sleep.
-func (p *UniformPacer) AddChill(d time.Duration) {
-	if d <= 0 {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.next.IsZero() {
-		p.next = time.Now().Add(d)
-		return
-	}
-	p.next = p.next.Add(d)
-}
-
 // Decrement is a no-op (fixedWindow decrements on some network errors).
 func (p *UniformPacer) Decrement() {}
 
@@ -123,13 +108,6 @@ func (q *SmoothQueue[R]) QueueTask(f func() (R, error)) chan TaskResult[R] {
 	}
 
 	return c
-}
-
-// Chill nudges the uniform pacer after a rate limit so the next starts ease off briefly.
-func (q *SmoothQueue[R]) Chill(d time.Duration) {
-	if q.Limiter != nil {
-		q.Limiter.AddChill(d)
-	}
 }
 
 func (q *SmoothQueue[R]) scheduler() {
