@@ -32,6 +32,11 @@ const animationUploadRetryTries = 5
 const animationStartsPerMinute = 700
 const animationMaxConcurrentUploads = 44
 
+// Micro-pause every N starts (after normal pacing) so Roblox gets a brief breather.
+// Keeps overhead tiny: e.g. 3000 uploads ≈ (3000/20)*35ms ≈ 5.2s total extra.
+const animationAntiBurstEvery = 20
+const animationAntiBurstPause = 35 * time.Millisecond
+
 // After a 429, take another paced slot and pause so operation polls can drain.
 const animationRateLimitCooldown = 4 * time.Second
 
@@ -90,6 +95,7 @@ func Reupload(ctx *context.Context, r *request.Request) {
 	creatorMutexMap := shardedmap.New[*sync.RWMutex]()
 
 	uploadQueue := taskqueue.NewSmoothQueue[int64](animationMaxConcurrentUploads, animationStartsPerMinute)
+	uploadQueue.SetAntiBurstBreather(animationAntiBurstEvery, animationAntiBurstPause)
 	groupGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 8)
 	userGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 8)
 

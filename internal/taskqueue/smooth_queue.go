@@ -3,6 +3,7 @@ package taskqueue
 import (
 	"container/list"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -51,6 +52,13 @@ type SmoothQueue[R any] struct {
 	mutex              sync.Mutex
 	tasks              *list.List
 	isSchedulerRunning bool
+
+	// Optional anti-burst: after every breatherEvery starts, sleep breatherPauseNs (0 = off).
+	// Call SetAntiBurstBreather before QueueTask. Lets the API cool between bursts without
+	// changing the base pacing gap.
+	breatherEvery   atomic.Int64 // N > 0: pause every N starts
+	breatherPauseNs atomic.Int64 // nanoseconds
+	breathCount     atomic.Uint64
 }
 
 // NewSmoothQueue creates a queue with uniform start spacing and a concurrency ceiling.
@@ -69,6 +77,18 @@ func NewSmoothQueue[R any](maxConcurrent, startsPerMinute int) *SmoothQueue[R] {
 		sem:     make(chan struct{}, maxConcurrent),
 		tasks:   list.New(),
 	}
+}
+
+// SetAntiBurstBreather adds a tiny sleep every N upload starts (scheduler only), after
+// the normal paced Wait. Use small pause (e.g. 25–50ms) and N≈15–30 so total overhead
+// stays low. Pass every < 1 or pause < 1ms to disable. Call before QueueTask.
+func (q *SmoothQueue[R]) SetAntiBurstBreather(every int, pause time.Duration) {
+	if every < 1 || pause < time.Millisecond {
+		q.breatherEvery.Store(0)
+		return
+	}
+	q.breatherPauseNs.Store(int64(pause)) // store before every so scheduler never sees N>0 with unset pause
+	q.breatherEvery.Store(int64(every))
 }
 
 func (q *SmoothQueue[R]) QueueTask(f func() (R, error)) chan TaskResult[R] {
@@ -106,6 +126,12 @@ func (q *SmoothQueue[R]) scheduler() {
 
 		q.sem <- struct{}{}
 		q.Limiter.Wait()
+		if n := q.breatherEvery.Load(); n > 0 {
+			c := q.breathCount.Add(1)
+			if c%uint64(n) == 0 {
+				time.Sleep(time.Duration(q.breatherPauseNs.Load()))
+			}
+		}
 		go func(t task[R]) {
 			defer func() { <-q.sem }()
 			res, err := t.Func()
