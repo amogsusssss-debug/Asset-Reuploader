@@ -27,18 +27,18 @@ import (
 
 const assetTypeID int32 = 24
 const animationUploadRetryTries = 5
-// SmoothQueue: uniform spacing between starts (no fixed-window bursts). Tune down if
-// you still see 429; raising startsPerMinute or maxConcurrent increases load.
-const animationStartsPerMinute = 700
-const animationMaxConcurrentUploads = 44
+// SmoothQueue: uniform spacing + concurrency cap. Lower if long runs still 429.
+const animationStartsPerMinute = 600
+const animationMaxConcurrentUploads = 36
 
-// Micro-pause every N starts (after normal pacing) so Roblox gets a brief breather.
-// Keeps overhead tiny: e.g. 3000 uploads ≈ (3000/20)*35ms ≈ 5.2s total extra.
-const animationAntiBurstEvery = 20
-const animationAntiBurstPause = 35 * time.Millisecond
+// After this many successful uploads, hold the slot briefly so operation traffic can
+// drain (only while this upload holds a concurrency slot—no extra start jitter).
+const animationSuccessDrainEvery = 100
+const animationSuccessDrainPause = 90 * time.Millisecond
 
-// After a 429, take another paced slot and pause so operation polls can drain.
-const animationRateLimitCooldown = 4 * time.Second
+// After Roblox 429: brief pacer nudge + short sleep (avoid long stalls).
+const animationRateLimitChillGap = 120 * time.Millisecond
+const animationRateLimitCooldown = 1200 * time.Millisecond
 
 // Parallel 50-id GetAssetsInfo chunks (metadata only).
 const animationMaxParallelChunks = 6
@@ -95,7 +95,7 @@ func Reupload(ctx *context.Context, r *request.Request) {
 	creatorMutexMap := shardedmap.New[*sync.RWMutex]()
 
 	uploadQueue := taskqueue.NewSmoothQueue[int64](animationMaxConcurrentUploads, animationStartsPerMinute)
-	uploadQueue.SetAntiBurstBreather(animationAntiBurstEvery, animationAntiBurstPause)
+	var uploadSuccessCount atomic.Uint64
 	groupGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 8)
 	userGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 8)
 
@@ -130,7 +130,7 @@ func Reupload(ctx *context.Context, r *request.Request) {
 		}
 
 		res := <-uploadQueue.QueueTask(func() (int64, error) {
-			return retry.Do(
+			id, err := retry.Do(
 				retry.NewOptions(
 					retry.Tries(animationUploadRetryTries),
 					retry.Delay(400*time.Millisecond),
@@ -153,6 +153,7 @@ func Reupload(ctx *context.Context, r *request.Request) {
 						assetInfo.Name = fmt.Sprintf("(%s) [Censored]", assetInfo.Name)
 					default:
 						if errors.Is(err, ide.ErrRateLimited) && try < animationUploadRetryTries {
+							uploadQueue.Chill(animationRateLimitChillGap)
 							uploadQueue.Limiter.Wait()
 							time.Sleep(animationRateLimitCooldown)
 						}
@@ -165,6 +166,13 @@ func Reupload(ctx *context.Context, r *request.Request) {
 					return 0, &retry.ContinueRetry{Err: err}
 				},
 			)
+			if err != nil {
+				return 0, err
+			}
+			if n := uploadSuccessCount.Add(1); n%uint64(animationSuccessDrainEvery) == 0 {
+				time.Sleep(animationSuccessDrainPause)
+			}
+			return id, nil
 		})
 
 		if err := res.Error; err != nil {
