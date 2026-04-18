@@ -26,27 +26,19 @@ import (
 )
 
 const assetTypeID int32 = 24
-const animationUploadRetryTries = 3
+const animationUploadRetryTries = 5
 // Target max upload starts per minute (see taskqueue). Kept below Roblox 429s; each
 // upload also does operation polling, so very high values still spike GET traffic.
 const animationUploadsPerMinute = 900
+
+// After a 429, wait for the next limiter slot and pause so in-flight polls can drain
+// before retrying (avoids a handful of spurious failures at the tail of a batch).
+const animationRateLimitCooldown = 6 * time.Second
 
 // Limits how many 50-id asset-info chunks run batch upload at once (fewer spikes).
 const animationMaxParallelChunks = 3
 
 var ErrUnauthorized = errors.New("authentication required to access asset")
-
-// Backoff after Roblox HTTP rate-limit on a single upload attempt (seconds only).
-func animationRateLimitBackoff(try int) time.Duration {
-	if try < 1 {
-		try = 1
-	}
-	sec := 6 * (1 << (try - 1)) // 6, 12, 24, …
-	if sec > 30 {
-		return 30 * time.Second
-	}
-	return time.Duration(sec) * time.Second
-}
 
 func MoveValueToTop[T comparable](arr *atomicarray.AtomicArray[T], value T) {
 	arr.Update(func(currentArray []T) []T {
@@ -152,7 +144,8 @@ func Reupload(ctx *context.Context, r *request.Request) {
 						assetInfo.Name = fmt.Sprintf("(%s) [Censored]", assetInfo.Name)
 					default:
 						if errors.Is(err, ide.ErrRateLimited) && try < animationUploadRetryTries {
-							time.Sleep(animationRateLimitBackoff(try))
+							uploadQueue.Limiter.Wait()
+							time.Sleep(animationRateLimitCooldown)
 						}
 						switch err.(type) {
 						case *net.OpError, *net.DNSError:
