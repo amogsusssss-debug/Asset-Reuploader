@@ -26,6 +26,55 @@ const (
 var errTokenInvalid = errors.New("XSRF token validation failed")
 var ErrRateLimited = errors.New("rate limited")
 
+// RateLimitError is returned on HTTP 429. RetryAfter is taken from the Retry-After
+// header when present (RFC 7231). errors.Is(err, ErrRateLimited) remains true.
+type RateLimitError struct {
+	RetryAfter time.Duration
+}
+
+func (e *RateLimitError) Error() string { return "rate limited" }
+
+func (e *RateLimitError) Unwrap() error { return ErrRateLimited }
+
+func parseRetryAfterHeader(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if sec, err := strconv.Atoi(v); err == nil && sec >= 0 {
+		return clampRetryAfter(time.Duration(sec) * time.Second)
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		d := time.Until(t)
+		if d < 0 {
+			return 0
+		}
+		return clampRetryAfter(d)
+	}
+	return 0
+}
+
+func clampRetryAfter(d time.Duration) time.Duration {
+	const minW = time.Second
+	const maxW = 2 * time.Minute
+	switch {
+	case d < minW:
+		return minW
+	case d > maxW:
+		return maxW
+	default:
+		return d
+	}
+}
+
+func newRateLimitError(retryAfterHeader string) *RateLimitError {
+	d := parseRetryAfterHeader(retryAfterHeader)
+	if d <= 0 {
+		d = 2 * time.Second
+	}
+	return &RateLimitError{RetryAfter: d}
+}
+
 func setAPIKeyHeader(req *http.Request) {
 	apiKey := strings.TrimSpace(config.Get("api_key"))
 	if apiKey != "" {
@@ -217,7 +266,7 @@ func pollOperation(c *roblox.Client, operationID string) (*operationResponse, er
 		}
 		return &operation, nil
 	case http.StatusTooManyRequests:
-		return nil, ErrRateLimited
+		return nil, newRateLimitError(resp.Header.Get("Retry-After"))
 	case http.StatusForbidden:
 		c.SetToken(resp.Header.Get("x-csrf-token"))
 		return nil, errTokenInvalid
@@ -279,9 +328,14 @@ func executeCreateAsset(
 				if errors.Is(err, ErrRateLimited) {
 					poll429Streak++
 					if poll429Streak > 40 {
-						return 0, ErrRateLimited
+						return 0, err
 					}
-					time.Sleep(2 * time.Second)
+					var wait time.Duration = 2 * time.Second
+					var rle *RateLimitError
+					if errors.As(err, &rle) && rle.RetryAfter > 0 {
+						wait = rle.RetryAfter
+					}
+					time.Sleep(wait)
 					i--
 					continue
 				}
@@ -300,7 +354,7 @@ func executeCreateAsset(
 	case http.StatusUnauthorized:
 		return 0, onNotLoggedIn
 	case http.StatusTooManyRequests:
-		return 0, ErrRateLimited
+		return 0, newRateLimitError(resp.Header.Get("Retry-After"))
 	case http.StatusForbidden:
 		c.SetToken(resp.Header.Get("x-csrf-token"))
 		return 0, onTokenInvalid
