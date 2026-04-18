@@ -3,6 +3,7 @@ package animation
 import (
 	"errors"
 	"fmt"
+	"net"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -26,8 +27,9 @@ import (
 
 const assetTypeID int32 = 24
 const animationUploadRetryTries = 3
-// Scheduler + limiter ceiling (see taskqueue).
-const animationUploadsPerMinute = 2450
+// Target max upload starts per minute (see taskqueue). Kept below Roblox 429s; each
+// upload also does operation polling, so very high values still spike GET traffic.
+const animationUploadsPerMinute = 900
 
 // Limits how many 50-id asset-info chunks run batch upload at once (fewer spikes).
 const animationMaxParallelChunks = 3
@@ -134,6 +136,9 @@ func Reupload(ctx *context.Context, r *request.Request) {
 				retry.NewOptions(retry.Tries(animationUploadRetryTries)),
 				func(try int) (int64, error) {
 					pauseController.WaitIfPaused()
+					if try > 1 {
+						uploadQueue.Limiter.Wait()
+					}
 
 					id, err := uploadHandler()
 					if err == nil {
@@ -148,6 +153,10 @@ func Reupload(ctx *context.Context, r *request.Request) {
 					default:
 						if errors.Is(err, ide.ErrRateLimited) && try < animationUploadRetryTries {
 							time.Sleep(animationRateLimitBackoff(try))
+						}
+						switch err.(type) {
+						case *net.OpError, *net.DNSError:
+							uploadQueue.Limiter.Decrement()
 						}
 					}
 

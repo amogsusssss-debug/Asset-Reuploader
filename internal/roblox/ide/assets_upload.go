@@ -216,6 +216,8 @@ func pollOperation(c *roblox.Client, operationID string) (*operationResponse, er
 			return nil, err
 		}
 		return &operation, nil
+	case http.StatusTooManyRequests:
+		return nil, ErrRateLimited
 	case http.StatusForbidden:
 		c.SetToken(resp.Header.Get("x-csrf-token"))
 		return nil, errTokenInvalid
@@ -266,6 +268,7 @@ func executeCreateAsset(
 			return 0, errors.New("create asset operation id is empty")
 		}
 
+		var poll429Streak int
 		for i := 0; i < maxPollAttempts; i++ {
 			time.Sleep(pollInterval)
 			polled, err := pollOperation(c, operationID)
@@ -273,8 +276,18 @@ func executeCreateAsset(
 				if errors.Is(err, errTokenInvalid) {
 					return 0, onTokenInvalid
 				}
+				if errors.Is(err, ErrRateLimited) {
+					poll429Streak++
+					if poll429Streak > 40 {
+						return 0, ErrRateLimited
+					}
+					time.Sleep(2 * time.Second)
+					i--
+					continue
+				}
 				return 0, err
 			}
+			poll429Streak = 0
 			if !polled.Done {
 				continue
 			}
