@@ -27,15 +27,16 @@ import (
 
 const assetTypeID int32 = 24
 const animationUploadRetryTries = 5
-// Max create-asset starts per minute (taskqueue fixed window). Tuned below levels that
-// reliably trigger 429; retries still use Limiter.Wait + cooldown on 429.
-const animationUploadsPerMinute = 1200
+// SmoothQueue: uniform spacing between starts (no fixed-window bursts). Tune down if
+// you still see 429; raising startsPerMinute or maxConcurrent increases load.
+const animationStartsPerMinute = 700
+const animationMaxConcurrentUploads = 44
 
-// After a 429, resync with the limiter and pause so in-flight operation polls can drain.
-const animationRateLimitCooldown = 5 * time.Second
+// After a 429, take another paced slot and pause so operation polls can drain.
+const animationRateLimitCooldown = 4 * time.Second
 
-// Parallel 50-id GetAssetsInfo chunks (metadata only; uploads stay rate-limited below).
-const animationMaxParallelChunks = 8
+// Parallel 50-id GetAssetsInfo chunks (metadata only).
+const animationMaxParallelChunks = 6
 
 var ErrUnauthorized = errors.New("authentication required to access asset")
 
@@ -88,7 +89,7 @@ func Reupload(ctx *context.Context, r *request.Request) {
 	creatorPlaceMap := shardedmap.New[*atomicarray.AtomicArray[int64]]()
 	creatorMutexMap := shardedmap.New[*sync.RWMutex]()
 
-	uploadQueue := taskqueue.New[int64](time.Minute, animationUploadsPerMinute)
+	uploadQueue := taskqueue.NewSmoothQueue[int64](animationMaxConcurrentUploads, animationStartsPerMinute)
 	groupGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 8)
 	userGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 8)
 
