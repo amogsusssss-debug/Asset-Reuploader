@@ -1,5 +1,4 @@
 --!strict
-local NUMBER_ONLY_FILTER = "%d+"
 
 export type FilterOptions = {
     WhitelistedInstances: { string },
@@ -11,6 +10,24 @@ local function isValidId(id: number): boolean
 
 	local idLength = math.floor(math.log10(math.abs(id))) + 1
 	return idLength >= 7 and idLength <= 15 -- 7 is minimum length requirement for develop get assets info endpoint do not change
+end
+
+-- First %d+ in a URL is often wrong (e.g. ?version=1&id=12345678). Prefer the longest
+-- digit run that passes isValidId so we do not drop animations from the reupload list.
+local function pickBestValidAssetId(str: string): number?
+	local best: number? = nil
+	local bestLen = 0
+	for matched in string.gmatch(str, "%d+") do
+		local id = tonumber(matched)
+		if id and isValidId(id) then
+			local len = #matched
+			if len > bestLen or (len == bestLen and best ~= nil and id > best) then
+				bestLen = len
+				best = id
+			end
+		end
+	end
+	return best
 end
 
 local function getId(filteredInstance: Instance, possibleId: any): { [number]: { Instance } }
@@ -32,12 +49,14 @@ local function getStringIds(filteredInstance: Instance, str: string): { [number]
 end
 
 local function getAnimationId(animation: Animation): { [number]: { Instance } }
-    return getId(animation, string.match(animation.AnimationId, NUMBER_ONLY_FILTER))
+	local s = tostring((animation :: any).AnimationId)
+	return getId(animation, pickBestValidAssetId(s))
 end
 
 local function getSoundId(sound: Sound): { [number]: { Instance } }
-    return getId(sound, string.match(sound.SoundId, NUMBER_ONLY_FILTER))
-end 
+	local s = tostring((sound :: any).SoundId)
+	return getId(sound, pickBestValidAssetId(s))
+end
 
 local function getScriptIds(scriptInstance: Script | LocalScript | ModuleScript): { [number]: { Instance } }
     return getStringIds(scriptInstance, scriptInstance.Source)
@@ -56,11 +75,13 @@ local function getCharacterMesh(characterMesh: CharacterMesh): { [number]: { Ins
 end
 
 local function getMeshPart(meshPart: MeshPart): { [number]: { Instance } }
-    return getId(meshPart, string.match(meshPart.MeshId, NUMBER_ONLY_FILTER))
+	local s = tostring((meshPart :: any).MeshId)
+	return getId(meshPart, pickBestValidAssetId(s))
 end
 
 local function getSpecialMesh(specialMesh: SpecialMesh): { [number]: { Instance } }
-    return getId(specialMesh, string.match(specialMesh.MeshId, NUMBER_ONLY_FILTER))
+	local s = tostring((specialMesh :: any).MeshId)
+	return getId(specialMesh, pickBestValidAssetId(s))
 end
 
 local instanceIdGetters: { [string]: (instance: any) -> { [number]: { Instance } } } = {
