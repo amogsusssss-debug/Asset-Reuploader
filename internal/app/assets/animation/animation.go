@@ -26,13 +26,8 @@ import (
 
 const assetTypeID int32 = 24
 const animationUploadRetryTries = 3
-// Scheduler + limiter ceiling (see taskqueue). Stay below Roblox’s real limits so
-// we throttle here first instead of hammering then recovering.
-const animationUploadsPerMinute = 90
-
-// Max animations being downloaded + uploaded at once (each holds a slot until the
-// new asset id is committed). Lower count avoids overlapping create-asset calls.
-const animationMaxInflight = 3
+// Scheduler + limiter ceiling (see taskqueue).
+const animationUploadsPerMinute = 2450
 
 // Limits how many 50-id asset-info chunks run batch upload at once (fewer spikes).
 const animationMaxParallelChunks = 3
@@ -104,8 +99,6 @@ func Reupload(ctx *context.Context, r *request.Request) {
 	groupGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 5) // there doesnt seem to be a limit in minutes on this api endpoint... and its not public and i dont feel like testing the limits sooo hopefully this works
 	userGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 5)  // I dont even think there is a limit on this like group games but we can be safe... yes i like to spam elipses
 
-	inflight := make(chan struct{}, animationMaxInflight)
-
 	logger.Println("Reuploading animations...")
 
 	newBatchError := func(amt int, m string, err any) {
@@ -121,9 +114,6 @@ func Reupload(ctx *context.Context, r *request.Request) {
 
 	uploadAsset := func(wg *sync.WaitGroup, assetInfo *develop.AssetInfo, location string) {
 		defer wg.Done()
-
-		inflight <- struct{}{}
-		defer func() { <-inflight }()
 
 		oldName := assetInfo.Name
 
