@@ -27,16 +27,15 @@ import (
 
 const assetTypeID int32 = 24
 const animationUploadRetryTries = 5
-// Target max upload starts per minute (see taskqueue). Kept below Roblox 429s; each
-// upload also does operation polling, so very high values still spike GET traffic.
-const animationUploadsPerMinute = 900
+// Max create-asset starts per minute (taskqueue fixed window). Tuned below levels that
+// reliably trigger 429; retries still use Limiter.Wait + cooldown on 429.
+const animationUploadsPerMinute = 1200
 
-// After a 429, wait for the next limiter slot and pause so in-flight polls can drain
-// before retrying (avoids a handful of spurious failures at the tail of a batch).
-const animationRateLimitCooldown = 6 * time.Second
+// After a 429, resync with the limiter and pause so in-flight operation polls can drain.
+const animationRateLimitCooldown = 5 * time.Second
 
-// Limits how many 50-id asset-info chunks run batch upload at once (fewer spikes).
-const animationMaxParallelChunks = 3
+// Parallel 50-id GetAssetsInfo chunks (metadata only; uploads stay rate-limited below).
+const animationMaxParallelChunks = 8
 
 var ErrUnauthorized = errors.New("authentication required to access asset")
 
@@ -90,8 +89,8 @@ func Reupload(ctx *context.Context, r *request.Request) {
 	creatorMutexMap := shardedmap.New[*sync.RWMutex]()
 
 	uploadQueue := taskqueue.New[int64](time.Minute, animationUploadsPerMinute)
-	groupGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 5) // there doesnt seem to be a limit in minutes on this api endpoint... and its not public and i dont feel like testing the limits sooo hopefully this works
-	userGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 5)  // I dont even think there is a limit on this like group games but we can be safe... yes i like to spam elipses
+	groupGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 8)
+	userGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 8)
 
 	logger.Println("Reuploading animations...")
 
@@ -125,7 +124,10 @@ func Reupload(ctx *context.Context, r *request.Request) {
 
 		res := <-uploadQueue.QueueTask(func() (int64, error) {
 			return retry.Do(
-				retry.NewOptions(retry.Tries(animationUploadRetryTries)),
+				retry.NewOptions(
+					retry.Tries(animationUploadRetryTries),
+					retry.Delay(400*time.Millisecond),
+				),
 				func(try int) (int64, error) {
 					pauseController.WaitIfPaused()
 					if try > 1 {
