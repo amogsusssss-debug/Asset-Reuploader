@@ -330,10 +330,18 @@ func executeCreateAsset(
 					if poll429Streak > 40 {
 						return 0, err
 					}
-					var wait time.Duration = 2 * time.Second
+					wait := 3 * time.Second
 					var rle *RateLimitError
 					if errors.As(err, &rle) && rle.RetryAfter > 0 {
 						wait = rle.RetryAfter
+					}
+					// Retry-After is often short; add cushion and escalate if polls keep 429ing.
+					wait += 1200 * time.Millisecond
+					if poll429Streak >= 2 {
+						wait += time.Duration(min(poll429Streak, 8)) * 350 * time.Millisecond
+					}
+					if wait > 45*time.Second {
+						wait = 45 * time.Second
 					}
 					time.Sleep(wait)
 					i--
