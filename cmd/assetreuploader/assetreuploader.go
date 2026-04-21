@@ -55,7 +55,7 @@ func main() {
 		color.Error.Println("Failed to save cookie: ", err)
 	}
 	
-	ensureAPIKey()
+	ensureAPIKeys()
 
 	fmt.Println("localhost started on port " + port + ". Waiting to start reuploading.")
 	if err := serve(c); err != nil {
@@ -105,41 +105,62 @@ func getCookie(c *roblox.Client) {
 	}
 }
 
-func ensureAPIKey() {
+func ensureAPIKeys() {
 	currentAPIKey := strings.TrimSpace(config.Get("api_key"))
-	if currentAPIKey != "" {
-		return
+	if currentAPIKey == "" {
+		fmt.Println("Enter your Open Cloud API key to enable mesh/animation uploads.")
+		fmt.Println("How to get one:")
+		fmt.Println("1. Go to https://create.roblox.com/dashboard/credentials?activeTab=ApiKeysTab")
+		fmt.Println("2. Click Create API Key")
+		fmt.Println("3. Enter any name")
+		fmt.Println("4. Select Assets in Select API System")
+		fmt.Println("5. Select Write in each Assets permission")
+		for {
+			key, err := console.Input("API key: ")
+			if err != nil {
+				color.Error.Println(err)
+				continue
+			}
+
+			key = strings.TrimSpace(key)
+			if key == "" {
+				color.Error.Println("API key is required.")
+				continue
+			}
+
+			config.Set("api_key", key)
+			if err := config.PersistAPIKey(); err != nil {
+				color.Error.Println("Failed to save api key: ", err)
+				continue
+			}
+			if err := config.Save(); err != nil {
+				color.Error.Println("Failed to save config: ", err)
+				continue
+			}
+			break
+		}
 	}
 
-	fmt.Println("Enter your Open Cloud API key to enable mesh/animation uploads.")
-	fmt.Println("How to get one:")
-	fmt.Println("1. Go to https://create.roblox.com/dashboard/credentials?activeTab=ApiKeysTab")
-	fmt.Println("2. Click Create API Key")
-	fmt.Println("3. Enter any name")
-	fmt.Println("4. Select Assets in Select API System")
-	fmt.Println("5. Select Write in each Assets permission")
-	for {
-		key, err := console.Input("API key: ")
+	currentSecondAPIKey := strings.TrimSpace(config.Get("api_key_2"))
+	if currentSecondAPIKey == "" {
+		fmt.Println("Optional: enter a second Open Cloud API key used when spoofing hits rate limits.")
+		fmt.Println("Leave blank to skip.")
+		secondKey, err := console.Input("Second API key (optional): ")
 		if err != nil {
 			color.Error.Println(err)
-			continue
+			return
 		}
-
-		key = strings.TrimSpace(key)
-		if key == "" {
-			color.Error.Println("API key is required.")
-			continue
+		secondKey = strings.TrimSpace(secondKey)
+		if secondKey != "" {
+			config.Set("api_key_2", secondKey)
+			if err := config.PersistSecondAPIKey(); err != nil {
+				color.Error.Println("Failed to save second api key: ", err)
+				return
+			}
+			if err := config.Save(); err != nil {
+				color.Error.Println("Failed to save config: ", err)
+				return
+			}
 		}
-
-		config.Set("api_key", key)
-		if err := config.PersistAPIKey(); err != nil {
-			color.Error.Println("Failed to save api key: ", err)
-			continue
-		}
-		if err := config.Save(); err != nil {
-			color.Error.Println("Failed to save config: ", err)
-			continue
-		}
-		break
 	}
 }
