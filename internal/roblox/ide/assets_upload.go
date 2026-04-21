@@ -31,6 +31,10 @@ var apiKeyInitOnce sync.Once
 var useSecondaryAPIKey atomic.Bool
 var primaryAPIKey string
 var secondaryAPIKey string
+var apiKeySwitchMu sync.Mutex
+var lastAPIKeySwitchAt time.Time
+
+const apiKeySwitchCooldown = 1200 * time.Millisecond
 
 // RateLimitError is returned on HTTP 429. RetryAfter is taken from the Retry-After
 // header when present (RFC 7231). errors.Is(err, ErrRateLimited) remains true.
@@ -117,11 +121,18 @@ func SwitchAPIKeyOnRateLimit() (string, bool) {
 	if !HasDistinctAPIKeys() {
 		return "", false
 	}
+	apiKeySwitchMu.Lock()
+	defer apiKeySwitchMu.Unlock()
+	if !lastAPIKeySwitchAt.IsZero() && time.Since(lastAPIKeySwitchAt) < apiKeySwitchCooldown {
+		return "", false
+	}
 	if useSecondaryAPIKey.Load() {
 		useSecondaryAPIKey.Store(false)
+		lastAPIKeySwitchAt = time.Now()
 		return "first", true
 	}
 	useSecondaryAPIKey.Store(true)
+	lastAPIKeySwitchAt = time.Now()
 	return "second", true
 }
 
