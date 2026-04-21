@@ -172,19 +172,6 @@ return function(ui: UiLibrary.Ui, _plugin: Plugin)
 
 	themeList = tab:CreateList()
 
-	themeList:CreateElement("Studio")
-		:OnClicked(function()
-			local theme = ui.theme.get()
-			if theme.Id == "Studio" then
-				return
-			end
-
-			local oldThemeId = theme.Id
-			ui.theme.set("Studio")
-			ui:UpdateTheme()
-			setThemeButton(oldThemeId, "Studio")
-		end)
-
 	for id, theme in ui.theme.getThemes() do
 		local name: string = theme.Name
 		if name == "Studio" then
@@ -194,7 +181,9 @@ return function(ui: UiLibrary.Ui, _plugin: Plugin)
 	end
 
 	local currentTheme = ui.theme.get()
-	local element = themeList.elements[currentTheme.Id]
-	element.instance.BackgroundColor3 = currentTheme.SelectedColor
-	element.selected = true
+	local currentElement = themeList.elements[currentTheme.Id]
+	if currentElement then
+		currentElement.instance.BackgroundColor3 = currentTheme.SelectedColor
+		currentElement.selected = true
+	end
 end
