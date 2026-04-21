@@ -189,6 +189,10 @@ func Reupload(ctx *context.Context, r *request.Request) {
 									logger.Println("Rate limit detected; switched to second API key for animation uploads.")
 								}
 							})
+							if ide.HasDistinctAPIKeys() {
+								// With two different keys configured, skip the anti-rate-limit wait path.
+								return 0, &retry.ContinueRetry{Err: err}
+							}
 							wait := animationRateLimitMinBackoff
 							var rle *ide.RateLimitError
 							if errors.As(err, &rle) && rle.RetryAfter > 0 {

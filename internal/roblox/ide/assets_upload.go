@@ -104,6 +104,12 @@ func TrySwitchToSecondaryAPIKey() bool {
 	return true
 }
 
+// HasDistinctAPIKeys reports whether both api_key and api_key_2 are set and differ.
+func HasDistinctAPIKeys() bool {
+	apiKeyInitOnce.Do(initAPIKeys)
+	return primaryAPIKey != "" && secondaryAPIKey != "" && primaryAPIKey != secondaryAPIKey
+}
+
 func setAPIKeyHeader(req *http.Request) {
 	apiKey := activeAPIKey()
 	if apiKey != "" {
