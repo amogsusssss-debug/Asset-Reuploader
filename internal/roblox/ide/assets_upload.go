@@ -110,6 +110,21 @@ func HasDistinctAPIKeys() bool {
 	return primaryAPIKey != "" && secondaryAPIKey != "" && primaryAPIKey != secondaryAPIKey
 }
 
+// SwitchAPIKeyOnRateLimit flips active key between api_key and api_key_2.
+// Returns the key name switched to and true when a switch happened.
+func SwitchAPIKeyOnRateLimit() (string, bool) {
+	apiKeyInitOnce.Do(initAPIKeys)
+	if !HasDistinctAPIKeys() {
+		return "", false
+	}
+	if useSecondaryAPIKey.Load() {
+		useSecondaryAPIKey.Store(false)
+		return "first", true
+	}
+	useSecondaryAPIKey.Store(true)
+	return "second", true
+}
+
 func setAPIKeyHeader(req *http.Request) {
 	apiKey := activeAPIKey()
 	if apiKey != "" {

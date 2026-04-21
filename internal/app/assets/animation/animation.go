@@ -102,7 +102,6 @@ func Reupload(ctx *context.Context, r *request.Request) {
 	// attempt so we don’t immediately hammer the API again from other goroutines.
 	var quiesceMu sync.Mutex
 	var quiesceUntil time.Time
-	var apiKeySwapOnce sync.Once
 	extendAPIQuiesce := func(d time.Duration) {
 		if d < 500*time.Millisecond {
 			d = 500 * time.Millisecond
@@ -186,13 +185,9 @@ func Reupload(ctx *context.Context, r *request.Request) {
 						assetInfo.Name = fmt.Sprintf("(%s) [Censored]", assetInfo.Name)
 					default:
 						if errors.Is(err, ide.ErrRateLimited) && try < animationUploadRetryTries {
-							apiKeySwapOnce.Do(func() {
-								if ide.TrySwitchToSecondaryAPIKey() {
-									logger.Println("Rate limit detected; switched to second API key for animation uploads.")
-								}
-							})
-							if ide.HasDistinctAPIKeys() {
-								// With two different keys configured, skip the anti-rate-limit wait path.
+							if switchedTo, ok := ide.SwitchAPIKeyOnRateLimit(); ok {
+								logger.Println("Rate limit detected; switched to " + switchedTo + " API key for animation uploads.")
+								// With two different keys configured, immediately retry on the other key.
 								skipNextLimiterWait = true
 								return 0, &retry.ContinueRetryNoDelay{Err: err}
 							}
