@@ -63,46 +63,6 @@ local PREMADE_THEMES = {
 
 return function(ui: UiLibrary.Ui, _plugin: Plugin)
 	local tab = ui:CreateTab("Themes")
-	local themeList
-
-	local function setThemeButton(oldTheme: string, newTheme: string)
-		local theme = ui.theme.get()
-
-		local oldElement = themeList.elements[oldTheme]
-		oldElement.instance.BackgroundColor3 = theme.UnselectedColor
-		oldElement.selected = false
-
-		local newElement = themeList.elements[newTheme]
-		newElement.instance.BackgroundColor3 = theme.SelectedColor
-		newElement.selected = true
-	end
-
-	local function createThemeButton(themeId: string, themeName: string)
-		local element = themeList:CreateElement(themeId)
-			:OnClicked(function()
-				local theme = ui.theme.get()
-				if theme.Id == themeId then
-					return
-				end
-
-				local oldThemeId = theme.Id
-				ui.theme.set(themeId)
-				ui:UpdateTheme()
-				setThemeButton(oldThemeId, themeId)
-			end)
-			:AddDestroyButton(function()
-				local theme = ui.theme.get()
-				if theme.Id == themeId then
-					ui.theme.set("Studio")
-					ui:UpdateTheme()
-					setThemeButton(themeId, "Studio")
-				end
-
-				ui.theme.remove(themeId)
-			end)
-
-		element.instance.TextLabel.Text = themeName
-	end
 
 	local function getThemeIdByName(themeName: string): string?
 		for id, theme in ui.theme.getThemes() do
@@ -118,10 +78,8 @@ return function(ui: UiLibrary.Ui, _plugin: Plugin)
 		if currentTheme.Id == themeId then
 			return
 		end
-		local oldThemeId = currentTheme.Id
 		ui.theme.set(themeId)
 		ui:UpdateTheme()
-		setThemeButton(oldThemeId, themeId)
 	end
 
 	tab:CreateLabel("Pre-made themes")
@@ -142,7 +100,6 @@ return function(ui: UiLibrary.Ui, _plugin: Plugin)
 			end
 
 			local themeId = newThemeId :: string
-			createThemeButton(themeId, themeName)
 			applyThemeById(themeId)
 		end)
 	end
@@ -167,23 +124,6 @@ return function(ui: UiLibrary.Ui, _plugin: Plugin)
 			return
 		end
 
-		createThemeButton(result :: string, (rawTheme :: any).Name :: string)
+		applyThemeById(result :: string)
 	end)
-
-	themeList = tab:CreateList()
-
-	for id, theme in ui.theme.getThemes() do
-		local name: string = theme.Name
-		if name == "Studio" then
-			continue
-		end
-		createThemeButton(id, name)
-	end
-
-	local currentTheme = ui.theme.get()
-	local currentElement = themeList.elements[currentTheme.Id]
-	if currentElement then
-		currentElement.instance.BackgroundColor3 = currentTheme.SelectedColor
-		currentElement.selected = true
-	end
 end
