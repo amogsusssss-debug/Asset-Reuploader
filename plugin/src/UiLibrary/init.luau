@@ -6,6 +6,7 @@ local Theme = require("./UiLibrary/Theme")
 local Tip = require("./UiLibrary/Tip")
 
 local asset = script.Assets.MainFrame
+local TOPBAR_TITLE = "Bacfr Asset Reuploader 1.7.2"
 
 type ThemeManager = typeof(Theme)
 
@@ -75,6 +76,11 @@ local function UpdateTheme(self: Ui)
 	local topBar = uiFrame.Topbar
 	topBar.BackgroundColor3 = theme.BorderColor
 	topBar.Frame.BackgroundColor3 = theme.ForegroundColor
+	local topbarTitle = topBar:FindFirstChild("Title")
+	if topbarTitle and topbarTitle:IsA("TextLabel") then
+		topbarTitle.Text = TOPBAR_TITLE
+		Theme.updateText(topbarTitle)
+	end
 
 	local notification = uiFrame.Notification
 	notification.Image = theme.NotificationBackgroundImage
