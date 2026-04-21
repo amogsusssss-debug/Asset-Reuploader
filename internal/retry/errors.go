@@ -11,6 +11,17 @@ func (e *ContinueRetry) Error() string {
 	return e.Err.Error()
 }
 
+type ContinueRetryNoDelay struct {
+	Err error
+}
+
+func (e *ContinueRetryNoDelay) Error() string {
+	if e.Err == nil {
+		return "unknown error"
+	}
+	return e.Err.Error()
+}
+
 type ExitRetry struct {
 	Err error
 }

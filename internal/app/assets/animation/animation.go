@@ -160,6 +160,7 @@ func Reupload(ctx *context.Context, r *request.Request) {
 		}
 
 		res := <-uploadQueue.QueueTask(func() (int64, error) {
+			skipNextLimiterWait := false
 			id, err := retry.Do(
 				retry.NewOptions(
 					retry.Tries(animationUploadRetryTries),
@@ -168,9 +169,10 @@ func Reupload(ctx *context.Context, r *request.Request) {
 				func(try int) (int64, error) {
 					pauseController.WaitIfPaused()
 					waitAPIQuiesce()
-					if try > 1 {
+					if try > 1 && !skipNextLimiterWait {
 						uploadQueue.Limiter.Wait()
 					}
+					skipNextLimiterWait = false
 
 					id, err := uploadHandler()
 					if err == nil {
@@ -191,7 +193,8 @@ func Reupload(ctx *context.Context, r *request.Request) {
 							})
 							if ide.HasDistinctAPIKeys() {
 								// With two different keys configured, skip the anti-rate-limit wait path.
-								return 0, &retry.ContinueRetry{Err: err}
+								skipNextLimiterWait = true
+								return 0, &retry.ContinueRetryNoDelay{Err: err}
 							}
 							wait := animationRateLimitMinBackoff
 							var rle *ide.RateLimitError
