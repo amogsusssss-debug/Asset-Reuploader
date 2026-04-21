@@ -97,6 +97,35 @@ func Reupload(ctx *context.Context, r *request.Request) {
 
 	uploadQueue := taskqueue.NewSmoothQueue[int64](animationMaxConcurrentUploads, animationStartsPerMinute)
 	var uploadSuccessCount atomic.Uint64
+
+	// When any upload hits 429, briefly pause *all* in-flight uploads before their next
+	// attempt so we don’t immediately hammer the API again from other goroutines.
+	var quiesceMu sync.Mutex
+	var quiesceUntil time.Time
+	var apiKeySwapOnce sync.Once
+	extendAPIQuiesce := func(d time.Duration) {
+		if d < 500*time.Millisecond {
+			d = 500 * time.Millisecond
+		}
+		if d > 12*time.Second {
+			d = 12 * time.Second
+		}
+		quiesceMu.Lock()
+		defer quiesceMu.Unlock()
+		t := time.Now().Add(d)
+		if t.After(quiesceUntil) {
+			quiesceUntil = t
+		}
+	}
+	waitAPIQuiesce := func() {
+		quiesceMu.Lock()
+		u := quiesceUntil
+		quiesceMu.Unlock()
+		if time.Now().Before(u) {
+			time.Sleep(time.Until(u))
+		}
+	}
+
 	groupGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 8)
 	userGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 8)
 
@@ -134,10 +163,11 @@ func Reupload(ctx *context.Context, r *request.Request) {
 			id, err := retry.Do(
 				retry.NewOptions(
 					retry.Tries(animationUploadRetryTries),
-					retry.Delay(400*time.Millisecond),
+					retry.Delay(900*time.Millisecond),
 				),
 				func(try int) (int64, error) {
 					pauseController.WaitIfPaused()
+					waitAPIQuiesce()
 					if try > 1 {
 						uploadQueue.Limiter.Wait()
 					}
@@ -154,6 +184,11 @@ func Reupload(ctx *context.Context, r *request.Request) {
 						assetInfo.Name = fmt.Sprintf("(%s) [Censored]", assetInfo.Name)
 					default:
 						if errors.Is(err, ide.ErrRateLimited) && try < animationUploadRetryTries {
+							apiKeySwapOnce.Do(func() {
+								if ide.TrySwitchToSecondaryAPIKey() {
+									logger.Println("Rate limit detected; switched to second API key for animation uploads.")
+								}
+							})
 							wait := animationRateLimitMinBackoff
 							var rle *ide.RateLimitError
 							if errors.As(err, &rle) && rle.RetryAfter > 0 {
@@ -167,6 +202,15 @@ func Reupload(ctx *context.Context, r *request.Request) {
 							uploadQueue.Chill(animationPost429Chill)
 							uploadQueue.Limiter.Wait()
 							time.Sleep(wait)
+							// Let other concurrent uploads back off before their next poll/create.
+							extend := wait / 4
+							if extend < 2*time.Second {
+								extend = 2 * time.Second
+							}
+							if extend > 8*time.Second {
+								extend = 8 * time.Second
+							}
+							extendAPIQuiesce(extend)
 						}
 						switch err.(type) {
 						case *net.OpError, *net.DNSError:

@@ -10,6 +10,8 @@ import (
 	"net/textproto"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kartFr/Asset-Reuploader/internal/app/config"
@@ -25,6 +27,10 @@ const (
 
 var errTokenInvalid = errors.New("XSRF token validation failed")
 var ErrRateLimited = errors.New("rate limited")
+var apiKeyInitOnce sync.Once
+var useSecondaryAPIKey atomic.Bool
+var primaryAPIKey string
+var secondaryAPIKey string
 
 // RateLimitError is returned on HTTP 429. RetryAfter is taken from the Retry-After
 // header when present (RFC 7231). errors.Is(err, ErrRateLimited) remains true.
@@ -75,8 +81,31 @@ func newRateLimitError(retryAfterHeader string) *RateLimitError {
 	return &RateLimitError{RetryAfter: d}
 }
 
+func initAPIKeys() {
+	primaryAPIKey = strings.TrimSpace(config.Get("api_key"))
+	secondaryAPIKey = strings.TrimSpace(config.Get("api_key_2"))
+}
+
+func activeAPIKey() string {
+	apiKeyInitOnce.Do(initAPIKeys)
+	if useSecondaryAPIKey.Load() && secondaryAPIKey != "" {
+		return secondaryAPIKey
+	}
+	return primaryAPIKey
+}
+
+// TrySwitchToSecondaryAPIKey atomically flips uploads to api_key_2 when configured.
+func TrySwitchToSecondaryAPIKey() bool {
+	apiKeyInitOnce.Do(initAPIKeys)
+	if secondaryAPIKey == "" {
+		return false
+	}
+	useSecondaryAPIKey.Store(true)
+	return true
+}
+
 func setAPIKeyHeader(req *http.Request) {
-	apiKey := strings.TrimSpace(config.Get("api_key"))
+	apiKey := activeAPIKey()
 	if apiKey != "" {
 		req.Header.Set("x-api-key", apiKey)
 	}
