@@ -61,6 +61,18 @@ local function Notify(self: Ui, title: string, description: string)
 	notification.Visible = true
 end
 
+local function findTopbarTitleLabel(topBar: Frame): TextLabel?
+	for _, instance in topBar:GetDescendants() do
+		if not instance:IsA("TextLabel") then
+			continue
+		end
+		if instance.Name == "Title" or string.find(string.lower(instance.Text), "asset reuploader", 1, true) then
+			return instance
+		end
+	end
+	return nil
+end
+
 local function UpdateTheme(self: Ui)
 	local theme = Theme.get()
 	
@@ -76,8 +88,8 @@ local function UpdateTheme(self: Ui)
 	local topBar = uiFrame.Topbar
 	topBar.BackgroundColor3 = theme.BorderColor
 	topBar.Frame.BackgroundColor3 = theme.ForegroundColor
-	local topbarTitle = topBar:FindFirstChild("Title")
-	if topbarTitle and topbarTitle:IsA("TextLabel") then
+	local topbarTitle = findTopbarTitleLabel(topBar)
+	if topbarTitle then
 		topbarTitle.Text = TOPBAR_TITLE
 		Theme.updateText(topbarTitle)
 	end
