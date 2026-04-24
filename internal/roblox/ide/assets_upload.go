@@ -10,8 +10,6 @@ import (
 	"net/textproto"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/kartFr/Asset-Reuploader/internal/app/config"
@@ -27,14 +25,6 @@ const (
 
 var errTokenInvalid = errors.New("XSRF token validation failed")
 var ErrRateLimited = errors.New("rate limited")
-var apiKeyInitOnce sync.Once
-var useSecondaryAPIKey atomic.Bool
-var primaryAPIKey string
-var secondaryAPIKey string
-var apiKeySwitchMu sync.Mutex
-var lastAPIKeySwitchAt time.Time
-
-const apiKeySwitchCooldown = 1200 * time.Millisecond
 
 // RateLimitError is returned on HTTP 429. RetryAfter is taken from the Retry-After
 // header when present (RFC 7231). errors.Is(err, ErrRateLimited) remains true.
@@ -85,59 +75,8 @@ func newRateLimitError(retryAfterHeader string) *RateLimitError {
 	return &RateLimitError{RetryAfter: d}
 }
 
-func initAPIKeys() {
-	primaryAPIKey = strings.TrimSpace(config.Get("api_key"))
-	secondaryAPIKey = strings.TrimSpace(config.Get("api_key_2"))
-}
-
-func activeAPIKey() string {
-	apiKeyInitOnce.Do(initAPIKeys)
-	if useSecondaryAPIKey.Load() && secondaryAPIKey != "" {
-		return secondaryAPIKey
-	}
-	return primaryAPIKey
-}
-
-// TrySwitchToSecondaryAPIKey atomically flips uploads to api_key_2 when configured.
-func TrySwitchToSecondaryAPIKey() bool {
-	apiKeyInitOnce.Do(initAPIKeys)
-	if secondaryAPIKey == "" {
-		return false
-	}
-	useSecondaryAPIKey.Store(true)
-	return true
-}
-
-// HasDistinctAPIKeys reports whether both api_key and api_key_2 are set and differ.
-func HasDistinctAPIKeys() bool {
-	apiKeyInitOnce.Do(initAPIKeys)
-	return primaryAPIKey != "" && secondaryAPIKey != "" && primaryAPIKey != secondaryAPIKey
-}
-
-// SwitchAPIKeyOnRateLimit flips active key between api_key and api_key_2.
-// Returns the key name switched to and true when a switch happened.
-func SwitchAPIKeyOnRateLimit() (string, bool) {
-	apiKeyInitOnce.Do(initAPIKeys)
-	if !HasDistinctAPIKeys() {
-		return "", false
-	}
-	apiKeySwitchMu.Lock()
-	defer apiKeySwitchMu.Unlock()
-	if !lastAPIKeySwitchAt.IsZero() && time.Since(lastAPIKeySwitchAt) < apiKeySwitchCooldown {
-		return "", false
-	}
-	if useSecondaryAPIKey.Load() {
-		useSecondaryAPIKey.Store(false)
-		lastAPIKeySwitchAt = time.Now()
-		return "first", true
-	}
-	useSecondaryAPIKey.Store(true)
-	lastAPIKeySwitchAt = time.Now()
-	return "second", true
-}
-
 func setAPIKeyHeader(req *http.Request) {
-	apiKey := activeAPIKey()
+	apiKey := strings.TrimSpace(config.Get("api_key"))
 	if apiKey != "" {
 		req.Header.Set("x-api-key", apiKey)
 	}

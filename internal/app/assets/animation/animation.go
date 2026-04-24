@@ -165,7 +165,6 @@ func Reupload(ctx *context.Context, r *request.Request) {
 		}
 
 		res := <-uploadQueue.QueueTask(func() (int64, error) {
-			skipNextLimiterWait := false
 			id, err := retry.Do(
 				retry.NewOptions(
 					retry.Tries(animationUploadRetryTries),
@@ -174,10 +173,9 @@ func Reupload(ctx *context.Context, r *request.Request) {
 				func(try int) (int64, error) {
 					pauseController.WaitIfPaused()
 					waitAPIQuiesce()
-					if try > 1 && !skipNextLimiterWait {
+					if try > 1 {
 						uploadQueue.Limiter.Wait()
 					}
-					skipNextLimiterWait = false
 
 					id, err := uploadHandler()
 					if err == nil {
@@ -191,12 +189,6 @@ func Reupload(ctx *context.Context, r *request.Request) {
 						assetInfo.Name = fmt.Sprintf("(%s) [Censored]", assetInfo.Name)
 					default:
 						if errors.Is(err, ide.ErrRateLimited) && try < animationUploadRetryTries {
-							if switchedTo, ok := ide.SwitchAPIKeyOnRateLimit(); ok {
-								logger.Println("Rate limit detected; switched to " + switchedTo + " API key for animation uploads.")
-								// With two different keys configured, immediately retry on the other key.
-								skipNextLimiterWait = true
-								return 0, &retry.ContinueRetryNoDelay{Err: err}
-							}
 							wait := animationRateLimitMinBackoff
 							var rle *ide.RateLimitError
 							if errors.As(err, &rle) && rle.RetryAfter > 0 {

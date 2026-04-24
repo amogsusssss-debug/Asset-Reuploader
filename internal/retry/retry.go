@@ -38,10 +38,6 @@ func Do[T any](options *retryOptions, callback func(try int) (T, error)) (T, err
 			}
 
 			time.Sleep(getDelay(options, tries))
-		case *ContinueRetryNoDelay:
-			if !canRetry(options, tries) {
-				return res, err.Err
-			}
 		default:
 			return res, err
 		}
