@@ -14,12 +14,10 @@ import (
 var (
 	config        = make(map[string]string, 0)
 	defaultConfig = map[string]string{
-		"port":              "38073",
-		"cookie_file":       "cookie.txt",
-		"api_key":           "",
-		"api_key_file":      "api-key.txt",
-		"api_key_2":         "",
-		"api_key_2_file":    "api-key-2.txt",
+		"port":         "38073",
+		"cookie_file":  "cookie.txt",
+		"api_key":      "",
+		"api_key_file": "api-key.txt",
 	}
 )
 
@@ -67,18 +65,6 @@ func init() {
 		}
 	}
 
-	key2File := config["api_key_2_file"]
-	data2, err2 := files.Read(key2File)
-	switch {
-	case err2 == nil && strings.TrimSpace(data2) != "":
-		config["api_key_2"] = strings.TrimSpace(data2)
-	case err2 != nil && errors.Is(err2, os.ErrNotExist):
-		if k := strings.TrimSpace(config["api_key_2"]); k != "" {
-			if wErr := files.Write(key2File, k); wErr != nil {
-				log.Printf("could not migrate second api key to %s: %v", key2File, wErr)
-			}
-		}
-	}
 }
 
 // PersistAPIKey writes the current api_key to api-key_file (Open Cloud key). Call after Set("api_key", ...).
@@ -88,15 +74,6 @@ func PersistAPIKey() error {
 		return nil
 	}
 	return files.Write(config["api_key_file"], k)
-}
-
-// PersistSecondAPIKey writes the current api_key_2 to api_key_2_file (optional Open Cloud backup key).
-func PersistSecondAPIKey() error {
-	k := strings.TrimSpace(config["api_key_2"])
-	if k == "" {
-		return nil
-	}
-	return files.Write(config["api_key_2_file"], k)
 }
 
 func Get(key string) string {
@@ -116,7 +93,7 @@ func Save() error {
 	sort.Strings(keys)
 
 	for _, key := range keys {
-		if key == "api_key" || key == "api_key_2" {
+		if key == "api_key" {
 			continue
 		}
 		out.WriteString(key)
