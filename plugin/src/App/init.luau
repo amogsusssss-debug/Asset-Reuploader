@@ -12,6 +12,7 @@ local tabOrder = {
     "Mesh",
     "Replace",
     "Filter",
+    "Themes",
     "Settings"
 }
 

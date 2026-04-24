@@ -79,10 +79,16 @@ func Reupload(ctx *context.Context, r *request.Request) {
 	idsToUpload := len(r.IDs)
 	var idsProcessed atomic.Int32
 
-	defaultPlaceIDs := r.DefaultPlaceIDs
+	defaultPlaceIDs := append([]int64(nil), r.DefaultPlaceIDs...)
 	defaultPlaceIDsMap := make(map[int64]struct{}, len(defaultPlaceIDs))
 	for _, placeID := range defaultPlaceIDs {
 		defaultPlaceIDsMap[placeID] = struct{}{}
+	}
+	if r.PlaceID > 0 {
+		if _, exists := defaultPlaceIDsMap[r.PlaceID]; !exists {
+			defaultPlaceIDs = append(defaultPlaceIDs, r.PlaceID)
+			defaultPlaceIDsMap[r.PlaceID] = struct{}{}
+		}
 	}
 
 	var groupID int64
@@ -97,6 +103,34 @@ func Reupload(ctx *context.Context, r *request.Request) {
 
 	uploadQueue := taskqueue.NewSmoothQueue[int64](animationMaxConcurrentUploads, animationStartsPerMinute)
 	var uploadSuccessCount atomic.Uint64
+
+	// When any upload hits 429, briefly pause *all* in-flight uploads before their next
+	// attempt so we don’t immediately hammer the API again from other goroutines.
+	var quiesceMu sync.Mutex
+	var quiesceUntil time.Time
+	extendAPIQuiesce := func(d time.Duration) {
+		if d < 500*time.Millisecond {
+			d = 500 * time.Millisecond
+		}
+		if d > 12*time.Second {
+			d = 12 * time.Second
+		}
+		quiesceMu.Lock()
+		defer quiesceMu.Unlock()
+		t := time.Now().Add(d)
+		if t.After(quiesceUntil) {
+			quiesceUntil = t
+		}
+	}
+	waitAPIQuiesce := func() {
+		quiesceMu.Lock()
+		u := quiesceUntil
+		quiesceMu.Unlock()
+		if time.Now().Before(u) {
+			time.Sleep(time.Until(u))
+		}
+	}
+
 	groupGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 8)
 	userGameQueue := taskqueue.New[*games.GamesResponse](time.Second*5, 8)
 
@@ -134,10 +168,11 @@ func Reupload(ctx *context.Context, r *request.Request) {
 			id, err := retry.Do(
 				retry.NewOptions(
 					retry.Tries(animationUploadRetryTries),
-					retry.Delay(400*time.Millisecond),
+					retry.Delay(900*time.Millisecond),
 				),
 				func(try int) (int64, error) {
 					pauseController.WaitIfPaused()
+					waitAPIQuiesce()
 					if try > 1 {
 						uploadQueue.Limiter.Wait()
 					}
@@ -167,6 +202,15 @@ func Reupload(ctx *context.Context, r *request.Request) {
 							uploadQueue.Chill(animationPost429Chill)
 							uploadQueue.Limiter.Wait()
 							time.Sleep(wait)
+							// Let other concurrent uploads back off before their next poll/create.
+							extend := wait / 4
+							if extend < 2*time.Second {
+								extend = 2 * time.Second
+							}
+							if extend > 8*time.Second {
+								extend = 8 * time.Second
+							}
+							extendAPIQuiesce(extend)
 						}
 						switch err.(type) {
 						case *net.OpError, *net.DNSError:
@@ -263,12 +307,8 @@ func Reupload(ctx *context.Context, r *request.Request) {
 	}
 
 	getAssetLocations := func(body []*assetdelivery.AssetRequestItem, placeID int64) ([]*assetdelivery.AssetLocation, error) {
-		handler, err := assetdelivery.NewBatchHandler(client, body, placeID)
-		if err != nil {
-			return nil, err
-		}
-
-		return retry.Do(
+		runGetLocations := func(handler func() ([]*assetdelivery.AssetLocation, error)) ([]*assetdelivery.AssetLocation, error) {
+			return retry.Do(
 			retry.NewOptions(retry.Tries(3)),
 			func(try int) ([]*assetdelivery.AssetLocation, error) {
 				pauseController.WaitIfPaused()
@@ -292,6 +332,37 @@ func Reupload(ctx *context.Context, r *request.Request) {
 				return locations, nil
 			},
 		)
+		}
+
+		handlerWithPlace, err := assetdelivery.NewBatchHandler(client, body, placeID)
+		if err != nil {
+			return nil, err
+		}
+		locations, withPlaceErr := runGetLocations(handlerWithPlace)
+		if withPlaceErr == nil {
+			for _, assetLocation := range locations {
+				if len(assetLocation.Locations) > 0 {
+					return locations, nil
+				}
+			}
+		}
+
+		// Fallback path: some animations do not resolve with Roblox-Place-Id set.
+		handlerWithoutPlace, err := assetdelivery.NewBatchHandler(client, body)
+		if err != nil {
+			if withPlaceErr != nil {
+				return nil, withPlaceErr
+			}
+			return locations, nil
+		}
+		fallbackLocations, fallbackErr := runGetLocations(handlerWithoutPlace)
+		if fallbackErr != nil {
+			if withPlaceErr != nil {
+				return nil, withPlaceErr
+			}
+			return nil, fallbackErr
+		}
+		return fallbackLocations, nil
 	}
 
 	batchUpload := func(wg *sync.WaitGroup, creatorID int64, creatorType string, creatorAssets []*develop.AssetInfo) {
@@ -321,11 +392,20 @@ func Reupload(ctx *context.Context, r *request.Request) {
 			return
 		}
 
+		lastLocationErrorByAssetID := make(map[int64]string)
 		for _, placeID := range creatorPlaceCache {
 			assetLocations, err := getAssetLocations(body, placeID)
 			if err != nil {
 				// Try another place instead of dropping the whole batch on one failed request.
 				continue
+			}
+			for i, assetLocation := range assetLocations {
+				if len(assetLocation.Locations) > 0 || i >= len(body) {
+					continue
+				}
+				if errs := assetLocation.Errors; len(errs) > 0 {
+					lastLocationErrorByAssetID[body[i].AssetID] = errs[0].Message
+				}
 			}
 
 			var hadSuccess bool
@@ -353,7 +433,11 @@ func Reupload(ctx *context.Context, r *request.Request) {
 		// batch response here: after partial successes, body indices no longer match.
 		for _, req := range body {
 			assetInfo := assetInfoMap[req.AssetID]
-			newUploadError("Failed to get asset location", assetInfo, "no download URL from any place (check Filter place IDs and permissions)")
+			if lastErr, hasSpecificErr := lastLocationErrorByAssetID[req.AssetID]; hasSpecificErr && lastErr != "" {
+				newUploadError("Failed to get asset location", assetInfo, lastErr)
+				continue
+			}
+			newUploadError("Failed to get asset location", assetInfo, "no download URL from any place (tried creator places and fallback without placeId)")
 		}
 
 		uploadWG.Wait()

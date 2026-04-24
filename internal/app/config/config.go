@@ -64,6 +64,7 @@ func init() {
 			}
 		}
 	}
+
 }
 
 // PersistAPIKey writes the current api_key to api-key_file (Open Cloud key). Call after Set("api_key", ...).
